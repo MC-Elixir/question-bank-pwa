@@ -18,7 +18,17 @@ async function allBanks(): Promise<StoredBank[]> {
   return new Promise((resolve, reject) => { const r = db.transaction(STORE).objectStore(STORE).getAll(); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error) })
 }
 async function saveBank(bank: StoredBank) {
-  const db = await openDb(); return new Promise<void>((resolve, reject) => { const r = db.transaction(STORE, 'readwrite').objectStore(STORE).put(bank); r.onsuccess = () => resolve(); r.onerror = () => reject(r.error) })
+  const db = await openDb()
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    const r = tx.objectStore(STORE).put(bank)
+    let settled = false
+    const fail = (error: unknown) => { if (!settled) { settled = true; reject(error instanceof Error ? error : new Error('IndexedDB 写入失败')) } }
+    r.onsuccess = () => { if (!settled) { settled = true; resolve() } }
+    r.onerror = () => fail(r.error)
+    tx.onerror = () => fail(tx.error)
+    tx.onabort = () => fail(tx.error || new Error('IndexedDB 事务被中止'))
+  })
 }
 function parseText(text: string): ParsedQuestion[] {
   const lines = text.split(/\r?\n/).map(x => x.replace(/\s+$/,'').trim()).filter(Boolean)
@@ -64,7 +74,22 @@ export const api = {
     }
   },
   async getImport(id: number) { const j = importCache.get(id); if (!j) throw new Error('导入任务不存在'); return j },
-  async confirmImport(id: number, questions?: ParsedQuestion[]) { const j = await this.getImport(id); const qs = questions || j.questions; const now = new Date().toISOString(); const bankId = Date.now(); const bank: StoredBank = { id: bankId, name: j.bank_name, description: j.source_filename, question_count: qs.length, created_at: now, updated_at: now, questions: qs.map((q, i) => ({ ...q, id: bankId * 10000 + i, bank_id: bankId, source_order: i + 1, needs_review: !!q.needs_review, is_favorite: false, is_wrong: false, answered: false })) }; await saveBank(bank); const done = { ...j, status: 'confirmed', bank_id: bankId }; importCache.set(id, done); return done },
+  async confirmImport(id: number, questions?: ParsedQuestion[]) {
+    const j = await this.getImport(id)
+    const qs = questions || j.questions
+    if (!qs.length) throw new Error('没有可入库的题目')
+    const now = new Date().toISOString(); const bankId = Date.now()
+    const bank: StoredBank = { id: bankId, name: j.bank_name, description: j.source_filename, question_count: qs.length, created_at: now, updated_at: now, questions: qs.map((q, i) => ({ ...q, id: bankId + i, bank_id: bankId, source_order: i + 1, needs_review: !!q.needs_review, is_favorite: false, is_wrong: false, answered: false })) }
+    console.info('[题库导入] 开始写入 IndexedDB', { bankId, questions: qs.length })
+    try {
+      await saveBank(bank)
+      console.info('[题库导入] IndexedDB 写入完成', { bankId, questions: qs.length })
+    } catch (error) {
+      console.error('[题库导入] IndexedDB 写入失败', error)
+      throw new Error('题库保存失败，请检查浏览器是否允许本地存储后重试')
+    }
+    const done = { ...j, status: 'confirmed', bank_id: bankId }; importCache.set(id, done); return done
+  },
   async submitAnswer(id: number, answer: string[]): Promise<AnswerResponse> { const banks = await allBanks(); const b = banks.find(x => x.questions.some(q => q.id === id)); const q = b?.questions.find(x => x.id === id); if (!b || !q) throw new Error('题目不存在'); const correct = JSON.stringify([...(q.answer || [])].sort()) === JSON.stringify([...answer].sort()); q.answered = true; q.is_wrong = !correct; await saveBank({ ...b, updated_at: new Date().toISOString() }); return { is_correct: correct, correct_answer: q.answer, explanation: q.explanation } },
   async setFavorite(id: number, isFavorite: boolean) { const banks = await allBanks(); const b = banks.find(x => x.questions.some(q => q.id === id)); const q = b?.questions.find(x => x.id === id); if (!b || !q) throw new Error('题目不存在'); q.is_favorite = isFavorite; await saveBank(b); return q },
   async exportBackup() { const blob = new Blob([JSON.stringify({ version: 1, exported_at: new Date().toISOString(), banks: await allBanks() }, null, 2)], { type: 'application/json' }); return blob },

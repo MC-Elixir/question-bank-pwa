@@ -45,6 +45,7 @@ async function confirm() {
   confirming.value = true
   showLoadingToast({ message: '入库中...', forbidClick: true, duration: 0 })
   try {
+    console.info('[题库导入] 用户确认入库', { questions: bankStore.currentImport.questions.length })
     await bankStore.confirmImport(bankStore.currentImport.questions)
     closeToast()
     showToast('导入成功')
