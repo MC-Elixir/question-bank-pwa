@@ -91,7 +91,8 @@ export const api = {
   },
   async confirmImport(id: number, questions?: ParsedQuestion[]) {
     const j = await this.getImport(id)
-    const qs = questions || j.questions
+    // Pinia 传入的 questions 可能包含响应式 Proxy；IndexedDB 只能写入普通可克隆对象。
+    const qs = JSON.parse(JSON.stringify(questions || j.questions)) as ParsedQuestion[]
     if (!qs.length) throw new Error('没有可入库的题目')
     const now = new Date().toISOString(); const bankId = Date.now()
     const bank: StoredBank = { id: bankId, name: j.bank_name, description: j.source_filename, question_count: qs.length, created_at: now, updated_at: now, questions: qs.map((q, i) => ({ ...q, id: bankId + i, bank_id: bankId, source_order: i + 1, needs_review: !!q.needs_review, is_favorite: false, is_wrong: false, answered: false })) }
