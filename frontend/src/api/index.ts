@@ -49,7 +49,17 @@ function parseText(text: string): ParsedQuestion[] {
   }
   push(); return result.map(q => ({ ...q, issues: q.needs_review ? ['未识别到答案，请人工确认'] : [] }))
 }
-let importCache = new Map<number, ImportJob>(); let nextImport = 1
+let importCache = new Map<number, ImportJob>()
+const IMPORT_SESSION_KEY = 'question-bank-pending-import'
+function persistImport(job: ImportJob) {
+  importCache.set(job.id, job)
+  sessionStorage.setItem(`${IMPORT_SESSION_KEY}:${job.id}`, JSON.stringify(job))
+}
+function readPersistedImport(id: number): ImportJob | null {
+  const raw = sessionStorage.getItem(`${IMPORT_SESSION_KEY}:${id}`)
+  if (!raw) return null
+  try { return JSON.parse(raw) as ImportJob } catch { return null }
+}
 export const api = {
   async listBanks(): Promise<QuestionBank[]> { return (await allBanks()).map(({ questions, ...b }) => b).sort((a,b) => b.updated_at.localeCompare(a.updated_at)) },
   async listQuestions(bankId: number, mode: Exclude<PracticeMode,'memorize'> = 'sequence') { const b = (await allBanks()).find(x => x.id === bankId); let q = [...(b?.questions || [])]; if (mode === 'random') q.sort(() => Math.random() - .5); if (mode === 'wrong') q = q.filter(x => x.is_wrong); if (mode === 'favorite') q = q.filter(x => x.is_favorite); if (mode === 'unanswered') q = q.filter(x => !x.answered); return q },
@@ -64,8 +74,8 @@ export const api = {
       const questions = parseText(value)
       if (!questions.length) throw new Error('未识别到题目，请检查题目是否以“1.”、“1、”等格式开头')
       console.info('[题库导入] 文本提取完成', { characters: value.length, questions: questions.length })
-      const job: ImportJob = { id: nextImport++, bank_name: bankName, status: 'preview', source_filename: file.name, question_count: questions.length, error_count: questions.filter(x => x.needs_review).length, questions, created_at: new Date().toISOString() }
-      importCache.set(job.id, job)
+      const job: ImportJob = { id: Date.now(), bank_name: bankName, status: 'preview', source_filename: file.name, question_count: questions.length, error_count: questions.filter(x => x.needs_review).length, questions, created_at: new Date().toISOString() }
+      persistImport(job)
       return job
     } catch (error) {
       console.error('[题库导入] 本地解析失败', error)
@@ -73,7 +83,12 @@ export const api = {
       throw new Error('无法读取该 Word 文件，可能已损坏或格式不受支持')
     }
   },
-  async getImport(id: number) { const j = importCache.get(id); if (!j) throw new Error('导入任务不存在'); return j },
+  async getImport(id: number) {
+    const j = importCache.get(id) || readPersistedImport(id)
+    if (!j) throw new Error('导入任务不存在，请返回重新选择 Word 文件')
+    importCache.set(id, j)
+    return j
+  },
   async confirmImport(id: number, questions?: ParsedQuestion[]) {
     const j = await this.getImport(id)
     const qs = questions || j.questions
@@ -88,7 +103,7 @@ export const api = {
       console.error('[题库导入] IndexedDB 写入失败', error)
       throw new Error('题库保存失败，请检查浏览器是否允许本地存储后重试')
     }
-    const done = { ...j, status: 'confirmed', bank_id: bankId }; importCache.set(id, done); return done
+    const done = { ...j, status: 'confirmed', bank_id: bankId }; importCache.set(id, done); sessionStorage.removeItem(`${IMPORT_SESSION_KEY}:${id}`); return done
   },
   async submitAnswer(id: number, answer: string[]): Promise<AnswerResponse> { const banks = await allBanks(); const b = banks.find(x => x.questions.some(q => q.id === id)); const q = b?.questions.find(x => x.id === id); if (!b || !q) throw new Error('题目不存在'); const correct = JSON.stringify([...(q.answer || [])].sort()) === JSON.stringify([...answer].sort()); q.answered = true; q.is_wrong = !correct; await saveBank({ ...b, updated_at: new Date().toISOString() }); return { is_correct: correct, correct_answer: q.answer, explanation: q.explanation } },
   async setFavorite(id: number, isFavorite: boolean) { const banks = await allBanks(); const b = banks.find(x => x.questions.some(q => q.id === id)); const q = b?.questions.find(x => x.id === id); if (!b || !q) throw new Error('题目不存在'); q.is_favorite = isFavorite; await saveBank(b); return q },
