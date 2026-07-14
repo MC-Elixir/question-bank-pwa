@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "mammoth": "^1.12.0",
     "pinia": "^3.0.4",
     "vant": "^4.10.0",
     "vite-plugin-pwa": "^1.3.0",
