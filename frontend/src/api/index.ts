@@ -43,7 +43,26 @@ let importCache = new Map<number, ImportJob>(); let nextImport = 1
 export const api = {
   async listBanks(): Promise<QuestionBank[]> { return (await allBanks()).map(({ questions, ...b }) => b).sort((a,b) => b.updated_at.localeCompare(a.updated_at)) },
   async listQuestions(bankId: number, mode: Exclude<PracticeMode,'memorize'> = 'sequence') { const b = (await allBanks()).find(x => x.id === bankId); let q = [...(b?.questions || [])]; if (mode === 'random') q.sort(() => Math.random() - .5); if (mode === 'wrong') q = q.filter(x => x.is_wrong); if (mode === 'favorite') q = q.filter(x => x.is_favorite); if (mode === 'unanswered') q = q.filter(x => !x.answered); return q },
-  async previewImport(file: File, bankName: string) { const { value } = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() }); const questions = parseText(value); const job: ImportJob = { id: nextImport++, bank_name: bankName, status: 'preview', source_filename: file.name, question_count: questions.length, error_count: questions.filter(x => x.needs_review).length, questions, created_at: new Date().toISOString() }; importCache.set(job.id, job); return job },
+  async previewImport(file: File, bankName: string) {
+    if (!file || !file.name.toLowerCase().endsWith('.docx')) throw new Error('仅支持 .docx 文件，不支持 .doc 文件')
+    if (!file.size) throw new Error('文件为空，请重新选择 .docx 文件')
+    console.info('[题库导入] 开始本地解析', { name: file.name, size: file.size, type: file.type })
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const { value } = await mammoth.extractRawText({ arrayBuffer })
+      if (!value.trim()) throw new Error('Word 中没有可读取的文本内容')
+      const questions = parseText(value)
+      if (!questions.length) throw new Error('未识别到题目，请检查题目是否以“1.”、“1、”等格式开头')
+      console.info('[题库导入] 文本提取完成', { characters: value.length, questions: questions.length })
+      const job: ImportJob = { id: nextImport++, bank_name: bankName, status: 'preview', source_filename: file.name, question_count: questions.length, error_count: questions.filter(x => x.needs_review).length, questions, created_at: new Date().toISOString() }
+      importCache.set(job.id, job)
+      return job
+    } catch (error) {
+      console.error('[题库导入] 本地解析失败', error)
+      if (error instanceof Error && (error.message.includes('Word') || error.message.includes('题目'))) throw error
+      throw new Error('无法读取该 Word 文件，可能已损坏或格式不受支持')
+    }
+  },
   async getImport(id: number) { const j = importCache.get(id); if (!j) throw new Error('导入任务不存在'); return j },
   async confirmImport(id: number, questions?: ParsedQuestion[]) { const j = await this.getImport(id); const qs = questions || j.questions; const now = new Date().toISOString(); const bankId = Date.now(); const bank: StoredBank = { id: bankId, name: j.bank_name, description: j.source_filename, question_count: qs.length, created_at: now, updated_at: now, questions: qs.map((q, i) => ({ ...q, id: bankId * 10000 + i, bank_id: bankId, source_order: i + 1, needs_review: !!q.needs_review, is_favorite: false, is_wrong: false, answered: false })) }; await saveBank(bank); const done = { ...j, status: 'confirmed', bank_id: bankId }; importCache.set(id, done); return done },
   async submitAnswer(id: number, answer: string[]): Promise<AnswerResponse> { const banks = await allBanks(); const b = banks.find(x => x.questions.some(q => q.id === id)); const q = b?.questions.find(x => x.id === id); if (!b || !q) throw new Error('题目不存在'); const correct = JSON.stringify([...(q.answer || [])].sort()) === JSON.stringify([...answer].sort()); q.answered = true; q.is_wrong = !correct; await saveBank({ ...b, updated_at: new Date().toISOString() }); return { is_correct: correct, correct_answer: q.answer, explanation: q.explanation } },

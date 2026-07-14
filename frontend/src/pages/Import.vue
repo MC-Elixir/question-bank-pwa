@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router'
 import { showLoadingToast, closeToast, showToast } from 'vant'
 import type { UploaderFileListItem } from 'vant'
 import { useBankStore } from '@/stores/bank'
-import { sleep } from '@/utils'
 
 const router = useRouter()
 const bankStore = useBankStore()
@@ -16,21 +15,14 @@ function onAfterRead(item: UploaderFileListItem | UploaderFileListItem[]) {
   const one = Array.isArray(item) ? item[0] : item
   const f = one?.file
   if (!f) return
+  if (!f.name.toLowerCase().endsWith('.docx')) {
+    showToast('仅支持 .docx 文件，不支持 .doc')
+    return
+  }
   file.value = f
   if (!bankName.value) {
     bankName.value = f.name.replace(/\.docx?$/i, '')
   }
-}
-
-async function pollImport(id: number) {
-  for (let i = 0; i < 40; i++) {
-    const job = await bankStore.loadImport(id)
-    if (job.status === 'preview' || job.status === 'confirmed' || (job.questions && job.questions.length >= 0)) {
-      return job
-    }
-    await sleep(500)
-  }
-  return bankStore.currentImport
 }
 
 async function submit() {
@@ -46,12 +38,11 @@ async function submit() {
   showLoadingToast({ message: '解析中...', forbidClick: true, duration: 0 })
   try {
     const job = await bankStore.previewImport(file.value, bankName.value.trim())
-    await pollImport(job.id)
     closeToast()
     router.replace(`/import/${job.id}`)
   } catch (e) {
     closeToast()
-    showToast((e as Error).message || '上传失败')
+    showToast((e as Error).message || '本地解析失败')
   } finally {
     uploading.value = false
   }
@@ -69,7 +60,7 @@ async function submit() {
       <div class="uploader-wrap">
         <van-uploader
           :max-count="1"
-          accept=".doc,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           :after-read="onAfterRead"
           @delete="file = null"
         >
